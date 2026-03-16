@@ -23,7 +23,9 @@ type: project
 | `启动.bat` | 双击启动，GBK 编码 |
 | `重启.bat` | 杀掉 7861 端口进程后重启，GBK 编码 |
 | `outputs/` | 生成的教案文件存放目录 |
-| `user_config.json` | 教师/教材信息持久化配置 |
+| `user_config.json` | 教师/教材信息持久化配置（含API密钥，已加入.gitignore，不上传） |
+| `user_config.example.json` | 配置模板（无敏感信息，纳入版本库） |
+| `README.md` | 傻瓜安装教程，显示在 GitHub 项目主页 |
 
 当前总代码量约 **2335 行**（ai_generator 1056 + template_filler 651 + app 423 + ppt_parser 205）
 
@@ -118,9 +120,22 @@ _set_east_asia_font(run, "仿宋")   # 通过 XML rFonts 设置东亚字体
 
 ---
 
+## 版本控制
+
+- **GitHub 仓库：** https://github.com/lotuseeds/jiaoan-generator（公开）
+- **当前稳定版本：** `v1.0.0`（2026-03-16 打标签）
+- **分支：** `master`
+- **git 代理配置：** `http://127.0.0.1:10808`（用户本地代理端口）
+- **回退方式：** `git checkout v1.0.0`
+- **新版本发布：** `git tag -a v1.x.x -m "描述"` + `git push --tags`
+
+---
+
 ## 注意事项
 
 - `重启.bat` 必须以 **GBK 编码**保存，否则 Windows 命令行乱码
 - Claude Code hook 会把 `>nul` 改为 `>/dev/null`，bat 文件避免使用 `>nul`
 - `_generate_teaching_expansion()` 返回 dict：`brief`（填教学计划表）+ `ideological_blocks`（分配到各节右栏思政内容）
 - `_generate_director_comment()` 有降级：API失败时返回固定模板文字
+- `pywin32` 是必须依赖（`win32com`/`pythoncom`），已补入 `requirements.txt`
+- 启动方式：双击 `app.py` 最可靠（`启动.bat` 在未装依赖时一闪而过）
