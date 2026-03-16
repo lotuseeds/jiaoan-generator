@@ -6,3 +6,4 @@ gradio>=6.9.0
 pillow>=10.0.0
 lxml>=4.9.0
 pymupdf>=1.23.0
+pywin32>=300
