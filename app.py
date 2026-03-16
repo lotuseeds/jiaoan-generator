@@ -381,13 +381,13 @@ with gr.Blocks(title="智能教案生成器") as demo:
             provider.change(fn=update_placeholder, inputs=provider, outputs=api_key)
 
             gr.Markdown("### 👩‍🏫 教师信息（每位老师只需填一次）")
-            teacher_name = gr.Textbox(label="任课教师姓名", placeholder="例：廉明明",
+            teacher_name = gr.Textbox(label="任课教师姓名", placeholder="例：大油条",
                                       value=_cfg.get("teacher_name", ""))
-            professional_title = gr.Textbox(label="教学职称", placeholder="例：副教授",
+            professional_title = gr.Textbox(label="教学职称", placeholder="例：助教",
                                             value=_cfg.get("professional_title", ""))
             department = gr.Textbox(label="教研室", placeholder="例：药物化学教研室",
                                     value=_cfg.get("department", ""))
-            college = gr.Textbox(label="学院", placeholder="例：大庆校区 药学院",
+            college = gr.Textbox(label="学院", placeholder="例：药学院",
                                  value=_cfg.get("college", ""))
             course_name = gr.Textbox(label="课程名称", placeholder="例：药物化学",
                                      value=_cfg.get("course_name", ""))
