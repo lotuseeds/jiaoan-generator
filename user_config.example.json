@@ -1,0 +1,17 @@
+{
+  "provider": "deepseek",
+  "api_key": "",
+  "teacher_name": "",
+  "professional_title": "",
+  "department": "",
+  "college": "",
+  "course_name": "",
+  "textbook_name": "",
+  "textbook_edition": "",
+  "textbook_editor": "",
+  "textbook_publisher": "",
+  "textbook_year": "",
+  "textbook_series": "",
+  "students": "",
+  "classroom": ""
+}
