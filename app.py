@@ -475,4 +475,5 @@ if __name__ == "__main__":
         inbrowser=True,
         share=False,
         theme=gr.themes.Soft(),
+        allowed_paths=[OUTPUT_DIR],
     )
