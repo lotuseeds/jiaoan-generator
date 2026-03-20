@@ -13,6 +13,7 @@ from datetime import datetime
 from ppt_parser import parse_file
 from ai_generator import generate_lesson_plan
 from template_filler import fill_template
+from logger import logger, log_system_info
 
 TEMPLATE_PATH = os.path.join(os.path.dirname(__file__), "template.docx")
 OUTPUT_DIR = os.path.join(os.path.dirname(__file__), "outputs")
@@ -301,6 +302,7 @@ def generate_streaming(provider_label, api_key, *args):
                                           progress_callback=progress_callback)
             q.put(("done", out_path, msg))
         except Exception as e:
+            logger.error("生成教案时发生未捕获异常", exc_info=True)
             q.put(("error", str(e)))
 
     thread = threading.Thread(target=run, daemon=True)
@@ -466,6 +468,7 @@ with gr.Blocks(title="智能教案生成器") as demo:
 
 
 if __name__ == "__main__":
+    log_system_info()
     demo.launch(
         server_name="0.0.0.0",
         server_port=7861,

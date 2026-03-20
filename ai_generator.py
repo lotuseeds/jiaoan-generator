@@ -8,31 +8,49 @@ AI 内容生成模块
 import re
 import anthropic
 import json
+import time
+from logger import logger
 
 
 # ─────────────────────────────────────────────
 # 基础工具函数
 # ─────────────────────────────────────────────
 
+_api_call_count = 0   # 全局调用计数器，便于日志定位第几次调用出错
+
+
 def _call_api(provider: str, api_key: str, prompt: str, max_tokens: int = 4096) -> str:
     """统一 API 调用入口，返回文本内容"""
-    if provider == "deepseek":
-        from openai import OpenAI
-        client = OpenAI(api_key=api_key, base_url="https://api.deepseek.com")
-        response = client.chat.completions.create(
-            model="deepseek-chat",
-            max_tokens=max_tokens,
-            messages=[{"role": "user", "content": prompt}]
-        )
-        return response.choices[0].message.content.strip()
-    else:
-        client = anthropic.Anthropic(api_key=api_key)
-        message = client.messages.create(
-            model="claude-opus-4-6",
-            max_tokens=max_tokens,
-            messages=[{"role": "user", "content": prompt}]
-        )
-        return message.content[0].text.strip()
+    global _api_call_count
+    _api_call_count += 1
+    call_n = _api_call_count
+    t0 = time.time()
+    logger.info(f"API调用 #{call_n} 开始 | provider={provider} | max_tokens={max_tokens} | prompt_len={len(prompt)}")
+    try:
+        if provider == "deepseek":
+            from openai import OpenAI
+            client = OpenAI(api_key=api_key, base_url="https://api.deepseek.com")
+            response = client.chat.completions.create(
+                model="deepseek-chat",
+                max_tokens=max_tokens,
+                messages=[{"role": "user", "content": prompt}]
+            )
+            result = response.choices[0].message.content.strip()
+        else:
+            client = anthropic.Anthropic(api_key=api_key)
+            message = client.messages.create(
+                model="claude-opus-4-6",
+                max_tokens=max_tokens,
+                messages=[{"role": "user", "content": prompt}]
+            )
+            result = message.content[0].text.strip()
+        elapsed = time.time() - t0
+        logger.info(f"API调用 #{call_n} 完成 | 耗时={elapsed:.1f}s | 返回长度={len(result)}")
+        return result
+    except Exception:
+        elapsed = time.time() - t0
+        logger.error(f"API调用 #{call_n} 失败 | 耗时={elapsed:.1f}s", exc_info=True)
+        raise
 
 
 def _extract_json(raw: str) -> dict:
@@ -324,6 +342,7 @@ def _generate_ideological_content(
         items = _extract_json_array(raw)
         return {item["section_id"]: item["content"] for item in items}
     except Exception:
+        logger.error("Stage 1.5 课程思政内容生成失败，返回空字典", exc_info=True)
         return {}
 
 
@@ -609,7 +628,7 @@ def _select_slide_images(
                 if sid in assign_map:
                     sec["image_assignments"] = assign_map[sid]
     except Exception:
-        pass  # 失败时 image_assignments 不存在，template_filler 自动降级
+        logger.error("Stage 3 图片定位失败，跳过图片插入", exc_info=True)
 
     return teaching_plan
 
@@ -682,6 +701,7 @@ A. 选项  B. 选项  C. 选项  D. 选项
     try:
         return _call_api(provider, api_key, prompt, max_tokens=2000)
     except Exception:
+        logger.error("Stage 2c 课后习题生成失败，返回空字符串", exc_info=True)
         return ""
 
 
@@ -743,6 +763,7 @@ def _generate_teaching_expansion(
         raw = _call_api(provider, api_key, prompt, max_tokens=2000)
         return _extract_json(raw)
     except Exception:
+        logger.error("Stage 2d 教学拓展生成失败，返回空字典", exc_info=True)
         return {}
 
 
@@ -802,6 +823,7 @@ def _generate_self_study_resources(
     try:
         return _call_api(provider, api_key, prompt, max_tokens=1500)
     except Exception:
+        logger.error("Stage 2e 自主学习资源生成失败，返回空字符串", exc_info=True)
         return ""
 
 
@@ -840,6 +862,7 @@ def _generate_director_comment(
             result = result[:50]
         return result
     except Exception:
+        logger.error("主任批语生成失败，使用默认文字", exc_info=True)
         return f"教案内容充实，重难点突出，融入课程思政元素，教学设计合理，准予授课。"
 
 
@@ -930,7 +953,7 @@ def generate_lesson_plan(
                     expansion_ideo_map[sec_id] = block.get("detail", "")
         _cb("expansion")
     except Exception:
-        pass
+        logger.error("Stage 2d 教学拓展（主流程）失败，跳过", exc_info=True)
 
     # Stage 1.5：专项课程思政内容生成（全量PPT分析，精准匹配本节内容）
     try:
@@ -942,6 +965,7 @@ def generate_lesson_plan(
         )
         _cb("ideological")
     except Exception:
+        logger.error("Stage 1.5 课程思政（主流程）失败，返回空", exc_info=True)
         stage15_map = {}
 
     # 合并：Stage 2d（教学拓展衍生）优先，Stage 1.5 补充空缺
@@ -958,6 +982,7 @@ def generate_lesson_plan(
         )
         _cb("non_main")
     except Exception:
+        logger.error("Stage 2a 导课/小结/课后布置生成失败，返回空", exc_info=True)
         non_main_results = []
 
     # Stage 2b：正文各子节
@@ -983,7 +1008,7 @@ def generate_lesson_plan(
             section_results.append(expanded)
             _cb("section", sec_title[:16])
         except Exception:
-            # 容错：某节失败，填入占位文字
+            logger.error(f"Stage 2b 正文节「{section.get('title','?')}」生成失败，填入占位文字", exc_info=True)
             section_results.append({
                 "section_id": section.get("section_id", ""),
                 "title": section.get("title", ""),
@@ -1010,7 +1035,7 @@ def generate_lesson_plan(
             result["homework"] = homework
         _cb("homework")
     except Exception:
-        pass
+        logger.error("Stage 2c 课后习题（主流程）失败，跳过", exc_info=True)
 
     # Stage 2e：自主学习资源专项生成（基于 Stage 2b 的实际模块）
     try:
@@ -1024,7 +1049,7 @@ def generate_lesson_plan(
             result["self_study_resources"] = resources
         _cb("resources")
     except Exception:
-        pass
+        logger.error("Stage 2e 自主学习资源（主流程）失败，跳过", exc_info=True)
 
     # Stage 3：AI 智能匹配截图位置（在正文内容生成完毕后执行，匹配更准确）
     if ppt_data:
@@ -1051,6 +1076,6 @@ def generate_lesson_plan(
         if director_comment:
             result["director_comment"] = director_comment
     except Exception:
-        pass
+        logger.error("主任批语（主流程）失败，跳过", exc_info=True)
 
     return result
