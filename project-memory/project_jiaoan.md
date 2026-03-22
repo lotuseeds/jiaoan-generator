@@ -17,7 +17,7 @@ type: project
 - **当前稳定版本：** `v1.0.0`（2026-03-16 打标签）
 - **最新提交：** `208892c`（2026-03-20）
 - **分支：** `master`
-- **git push 代理：** `http://127.0.0.1:10808`（push 时用 `-c http.proxy=...`）
+- **git push：** 直接 `git push origin master`，无需代理（2026-03-22 确认直连可用）
 - **更新.bat：** 直接 `git pull`，不带代理
 - **回退方式：** `git checkout v1.0.0`
 - **新版本发布：** `git tag -a v1.x.x -m "描述"` + `git push --tags`
