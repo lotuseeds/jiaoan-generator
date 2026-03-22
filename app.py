@@ -1,55 +1,78 @@
 """
-教案生成器 - Web 界面
+教案生成器 - Web 界面（多用户版）
 运行方式：python app.py
 """
 import os
 import json
 import queue
+import random
 import time
 import threading
 import gradio as gr
 from datetime import datetime
 
 from ppt_parser import parse_file
-from ai_generator import generate_lesson_plan
+from ai_generator import generate_lesson_plan, generate_mao_quotes
 from template_filler import fill_template
 from logger import logger, log_system_info
 
 TEMPLATE_PATH = os.path.join(os.path.dirname(__file__), "template.docx")
 OUTPUT_DIR = os.path.join(os.path.dirname(__file__), "outputs")
-CONFIG_PATH = os.path.join(os.path.dirname(__file__), "user_config.json")
+SERVER_CONFIG_PATH = os.path.join(os.path.dirname(__file__), "server_config.json")
+USER_CONFIGS_DIR = os.path.join(os.path.dirname(__file__), "user_configs")
 os.makedirs(OUTPUT_DIR, exist_ok=True)
+os.makedirs(USER_CONFIGS_DIR, exist_ok=True)
 
-# ── 配置持久化 ──
-_SAVE_KEYS = [
-    "provider", "api_key",
+# ── 配置 ──
+_USER_SAVE_KEYS = [
     "teacher_name", "professional_title", "department", "college", "course_name",
     "textbook_name", "textbook_edition", "textbook_editor",
     "textbook_publisher", "textbook_year", "textbook_series",
     "students", "classroom",
 ]
 
-def _load_config() -> dict:
+def _load_server_config() -> dict:
     try:
-        if os.path.exists(CONFIG_PATH):
-            with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+        if os.path.exists(SERVER_CONFIG_PATH):
+            with open(SERVER_CONFIG_PATH, "r", encoding="utf-8") as f:
                 return json.load(f)
     except Exception:
         pass
     return {}
 
-def _save_config(data: dict):
+def _load_user_config(teacher_name: str) -> list:
+    """根据教师姓名加载个人配置，返回12个字段值供 Gradio outputs 使用"""
+    empty = [""] * 12
+    if not teacher_name or not teacher_name.strip():
+        return empty
+    safe_name = teacher_name.strip().replace("/", "_").replace("\\", "_")
+    config_path = os.path.join(USER_CONFIGS_DIR, f"{safe_name}.json")
     try:
-        with open(CONFIG_PATH, "w", encoding="utf-8") as f:
-            json.dump({k: data[k] for k in _SAVE_KEYS if k in data}, f, ensure_ascii=False, indent=2)
+        if os.path.exists(config_path):
+            with open(config_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            return [data.get(k, "") for k in _USER_SAVE_KEYS[1:]]
+    except Exception:
+        pass
+    return empty
+
+def _save_user_config(teacher_name: str, data: dict):
+    if not teacher_name or not teacher_name.strip():
+        return
+    safe_name = teacher_name.strip().replace("/", "_").replace("\\", "_")
+    config_path = os.path.join(USER_CONFIGS_DIR, f"{safe_name}.json")
+    try:
+        with open(config_path, "w", encoding="utf-8") as f:
+            json.dump({k: data.get(k, "") for k in _USER_SAVE_KEYS}, f, ensure_ascii=False, indent=2)
     except Exception:
         pass
 
-_cfg = _load_config()
+_server_cfg = _load_server_config()
 
 # ── 进度灯泡显示 ──
 _STEP_LABELS = {
     "ppt_parse":   "📂 解析PPT文件内容",
+    "_mao_quotes": "📜 生成毛泽东语录",
     "structure":   "🗂️  解析教案整体结构框架",
     "expansion":   "📚 生成教学拓展与前沿内容",
     "ideological": "🎓 精选课程思政案例",
@@ -68,55 +91,50 @@ _WAIT_TIPS = [
     "✍️  AI 教师正在奋笔疾书...",
 ]
 
-_TOTAL_SECONDS = 720  # 12分钟 = 100%
+_MAO_QUOTES = [
+    "学习的敌人是自己的满足，要认真学习一点东西，必须从不自满开始。",
+    "虚心使人进步，骄傲使人落后。",
+    "读书是学习，使用也是学习，而且是更重要的学习。",
+    "没有调查，就没有发言权。",
+    "世界是你们的，也是我们的，但是归根结底是你们的。你们青年人朝气蓬勃，正在兴旺时期，好像早晨八九点钟的太阳。",
+    "人是要有一点精神的。",
+    "一切真知都是从直接经验发源的。",
+    "教学必须联系实际。",
+    "我们的教育方针，应该使受教育者在德育、智育、体育几方面都得到发展。",
+    "不打无准备之仗，不打无把握之仗。",
+    "理论与实践的统一，是马克思主义的一个最基本的原则。",
+    "学而不思则罔，思而不学则殆。",
+    "不懂得把理论应用于实践，这种理论有什么用处？",
+    "我们必须继承一切优秀的文学艺术遗产，批判地吸收其中一切有益的东西。",
+    "教师是人类灵魂的工程师。",
+]
 
+_TOTAL_SECONDS = 720  # 12分钟 = 100%
 
 _LIGHTS_TOTAL = 15   # 固定显示15个灯泡，始终排满一行
 
-_STATUS_RUNNING_HTML = """
+
+
+def _render_quote(quote: str, source: str = "", done: bool = False) -> str:
+    """渲染毛泽东语录卡片（生成中）或生成成功提示（完成后）"""
+    if done:
+        return '<div style="color:#52c41a;font-weight:600;font-size:15px;padding:10px 4px;">✅ 生成成功</div>'
+    if not quote:
+        return ""
+    source_line = f'<div style="font-size:11px;color:#8c8c8c;margin-top:4px;text-align:right;">—— 毛泽东·{source}</div>' if source else '<div style="font-size:11px;color:#8c8c8c;margin-top:4px;text-align:right;">—— 毛泽东</div>'
+    return f"""
 <style>
-@keyframes blk-a {
-  0%,100% { transform: translateY(0px)   rotate(0deg);   }
-  20%      { transform: translateY(-14px) rotate(-8deg);  }
-  40%      { transform: translateY(0px)   rotate(0deg);   }
-  60%      { transform: translateY(-6px)  rotate(4deg);   }
-  80%      { transform: translateY(0px)   rotate(0deg);   }
-}
-@keyframes blk-b {
-  0%,100% { transform: translateY(0px)   rotate(0deg);   }
-  15%      { transform: translateY(-8px)  rotate(6deg);   }
-  35%      { transform: translateY(0px)   rotate(0deg);   }
-  55%      { transform: translateY(-16px) rotate(-5deg);  }
-  75%      { transform: translateY(0px)   rotate(0deg);   }
-}
-@keyframes blk-c {
-  0%,100% { transform: translateY(0px)   rotate(0deg);   }
-  25%      { transform: translateY(-18px) rotate(10deg);  }
-  45%      { transform: translateY(0px)   rotate(0deg);   }
-  65%      { transform: translateY(-7px)  rotate(-6deg);  }
-  85%      { transform: translateY(0px)   rotate(0deg);   }
-}
-@keyframes col-a {
-  0%,100% { background: #1677ff; }
-  50%      { background: #40a9ff; }
-}
-@keyframes col-b {
-  0%,100% { background: #fa8c16; }
-  50%      { background: #ffc53d; }
-}
-@keyframes col-c {
-  0%,100% { background: #52c41a; }
-  50%      { background: #95de64; }
-}
+@keyframes quoteIn {{
+  from {{ opacity: 0; transform: translateY(12px); }}
+  to   {{ opacity: 1; transform: translateY(0);    }}
+}}
 </style>
-<div style="display:flex;align-items:flex-end;gap:8px;padding:8px 0 4px 0;">
-  <span style="display:inline-block;width:20px;height:20px;border-radius:3px;
-        animation:blk-a 1.1s ease-in-out infinite, col-a 1.1s ease-in-out infinite;"></span>
-  <span style="display:inline-block;width:22px;height:22px;border-radius:50%;
-        animation:blk-b 1.3s ease-in-out 0.15s infinite, col-b 1.3s ease-in-out 0.15s infinite;"></span>
-  <span style="display:inline-block;width:18px;height:18px;border-radius:6px;
-        animation:blk-c 0.95s ease-in-out 0.3s infinite, col-c 0.95s ease-in-out 0.3s infinite;"></span>
-  <span style="font-size:13px;color:#595959;margin-left:6px;padding-bottom:3px;">AI 正在生成教案，请稍候…</span>
+<div style="animation:quoteIn 2s ease-out forwards;border-left:3px solid #cf1322;
+     background:#fffbe6;border-radius:0 6px 6px 0;padding:10px 14px;margin-top:8px;">
+  <div style="font-family:楷体,'KaiTi',serif;font-size:14px;color:#262626;line-height:1.8;">
+    「{quote}」
+  </div>
+  {source_line}
 </div>
 """
 
@@ -175,7 +193,7 @@ def _render_progress(completed: int, total: int, step_msg: str, tip_idx: int,
 
 # ── 核心生成函数 ──
 def _run_generate(
-    provider, api_key, course_name, teacher_name, professional_title,
+    course_name, teacher_name, professional_title,
     department, college, students, classroom, teaching_date,
     title, textbook_name, textbook_edition, textbook_editor,
     textbook_publisher, textbook_year, textbook_series,
@@ -186,16 +204,35 @@ def _run_generate(
         if callable(progress_callback):
             progress_callback(msg, *extra)
 
+    provider_map = {"Anthropic (Claude)": "anthropic", "DeepSeek": "deepseek"}
+    provider = provider_map.get(_server_cfg.get("provider", "Anthropic (Claude)"), "anthropic")
+    api_key = _server_cfg.get("api_key", "")
+
     if not api_key.strip():
-        raise ValueError("请填写 API Key")
+        raise ValueError("服务器 API Key 未配置，请联系管理员")
     if not course_name.strip() or not title.strip():
         raise ValueError("课程名称和授课章节为必填项")
 
-    # 解析PPT
+    # 解析PPT 与 毛泽东语录 并行运行
     ppt_data = {}
+    quotes_done = threading.Event()
+
+    def _fetch_quotes():
+        try:
+            quotes = generate_mao_quotes(provider, api_key)
+            _cb("_mao_quotes", quotes)
+        except Exception:
+            logger.error("毛泽东语录生成失败，跳过", exc_info=True)
+        finally:
+            quotes_done.set()
+
+    threading.Thread(target=_fetch_quotes, daemon=True).start()
+
     if ppt_file is not None:
         _cb("ppt_parse")
         ppt_data = parse_file(ppt_file)
+
+    quotes_done.wait()  # 确保语录完成后再进入 Stage 1
 
     # AI 生成内容
     ai_content = generate_lesson_plan(
@@ -245,10 +282,8 @@ def _run_generate(
         ppt_data=ppt_data,
     )
 
-    # 保存配置
-    _save_config({
-        "provider": provider,
-        "api_key": api_key.strip(),
+    # 保存用户配置
+    _save_user_config(teacher_name, {
         "teacher_name": teacher_name,
         "professional_title": professional_title,
         "department": department,
@@ -267,27 +302,46 @@ def _run_generate(
     return output_path, f"✅ 生成成功！文件已保存为：{output_filename}"
 
 
-# ── Gradio 流式生成器 ──
-def generate_streaming(provider_label, api_key, *args):
-    provider_map = {"Anthropic (Claude)": "anthropic", "DeepSeek": "deepseek"}
-    provider = provider_map.get(provider_label, "anthropic")
+_QUOTE_INTERVAL = 25  # 每隔多少秒切换一条语录
 
+
+# ── Gradio 流式生成器 ──
+def generate_streaming(*args):
     q = queue.Queue()
     state = {
         "completed": 0,
         "total": 11,          # 初始估计，Stage 1 后更新
         "step_msg": "🚀 正在启动教案生成引擎...",
         "tip_idx": 0,
+        "quote_idx": random.randint(0, len(_MAO_QUOTES) - 1),
+        "quote_last_switch": time.time(),
+        "quotes": [],         # Stage 1 返回后填入 API 生成的语录
     }
+
+    def _current_quote_html():
+        elapsed_since_switch = time.time() - state["quote_last_switch"]
+        pool = state["quotes"] if state["quotes"] else None
+        if pool:
+            if elapsed_since_switch >= _QUOTE_INTERVAL:
+                state["quote_idx"] = (state["quote_idx"] + 1) % len(pool)
+                state["quote_last_switch"] = time.time()
+            q = pool[state["quote_idx"] % len(pool)]
+            return _render_quote(q.get("quote", ""), q.get("source", ""))
+        else:
+            if elapsed_since_switch >= _QUOTE_INTERVAL:
+                state["quote_idx"] = (state["quote_idx"] + 1) % len(_MAO_QUOTES)
+                state["quote_last_switch"] = time.time()
+            return _render_quote(_MAO_QUOTES[state["quote_idx"] % len(_MAO_QUOTES)])
 
     def progress_callback(step_key, *extra):
         if step_key == "_total":
-            # Stage 1 完成后，已知正文节数，更新总数
-            # 总数 = ppt_parse(1) + structure(1) + expansion(1) + ideological(1)
-            #        + non_main(1) + sections(N) + homework(1) + resources(1) + images(1) = N+8
-            # 但 _total 传入的是 ai_generator 内部的 6+N，再加上 ppt_parse 和 structure = 8+N
             state["total"] = extra[0] + 2  # +ppt_parse +structure（已完成）
             return
+        if step_key == "_mao_quotes":
+            if extra and isinstance(extra[0], list) and extra[0]:
+                state["quotes"] = extra[0]
+                state["quote_idx"] = random.randint(0, len(extra[0]) - 1)
+                state["quote_last_switch"] = time.time()
         label = _STEP_LABELS.get(step_key, step_key)
         if step_key == "section" and extra:
             label = f"📝 展开正文：{extra[0]}..."
@@ -298,8 +352,7 @@ def generate_streaming(provider_label, api_key, *args):
 
     def run():
         try:
-            out_path, msg = _run_generate(provider, api_key, *args,
-                                          progress_callback=progress_callback)
+            out_path, msg = _run_generate(*args, progress_callback=progress_callback)
             q.put(("done", out_path, msg))
         except Exception as e:
             logger.error("生成教案时发生未捕获异常", exc_info=True)
@@ -311,7 +364,7 @@ def generate_streaming(provider_label, api_key, *args):
 
     # 初始渲染
     display = _render_progress(0, state["total"], state["step_msg"], 0, 0)
-    yield None, _STATUS_RUNNING_HTML, display
+    yield gr.update(visible=False), "", display, gr.update(visible=False), _current_quote_html()
 
     while True:
         elapsed = time.time() - start_time
@@ -323,7 +376,7 @@ def generate_streaming(provider_label, api_key, *args):
                 state["completed"], state["total"],
                 state["step_msg"], state["tip_idx"], elapsed
             )
-            yield None, _STATUS_RUNNING_HTML, display
+            yield gr.update(visible=False), "", display, gr.update(visible=False), _current_quote_html()
             continue
 
         elapsed = time.time() - start_time
@@ -332,97 +385,158 @@ def generate_streaming(provider_label, api_key, *args):
                 state["completed"], state["total"],
                 state["step_msg"], state["tip_idx"], elapsed
             )
-            yield None, _STATUS_RUNNING_HTML, display
+            yield gr.update(visible=False), "", display, gr.update(visible=False), _current_quote_html()
         elif isinstance(item, tuple) and item[0] == "done":
             display = _render_progress(
                 state["total"], state["total"],
                 "✅ 所有步骤完成，教案已生成！", 0, elapsed, done=True
             )
             status_done = f'<div style="color:#52c41a;font-weight:600;font-size:14px;padding:4px 0;">✅ {item[2]}</div>'
-            yield item[1], status_done, display
-            break
+            out_path = item[1]
+            yield gr.update(value=out_path, visible=True), status_done, display, gr.update(visible=False), _current_quote_html()
+            # 生成完成后继续滚动语录
+            while True:
+                time.sleep(0.5)
+                yield gr.update(value=out_path, visible=True), gr.update(), gr.update(), gr.update(), _current_quote_html()
         elif isinstance(item, tuple) and item[0] == "error":
             display = _render_progress(
                 state["completed"], state["total"],
                 f"❌ 生成失败：{item[1]}", 0, elapsed
             )
-            status_err = f'<div style="color:#f5222d;font-weight:600;font-size:14px;padding:4px 0;">❌ 生成失败：{item[1]}</div>'
-            yield None, status_err, display
+            error_content = (
+                f'<div style="border:1px solid #ffccc7;background:#fff2f0;border-radius:8px;'
+                f'padding:16px;color:#cf1322;font-size:14px;line-height:1.6;">'
+                f'❌ <strong>生成失败</strong><br>{item[1]}</div>'
+            )
+            yield gr.update(visible=False), "", display, gr.update(value=error_content, visible=True), ""
             break
 
+
+# ── 课节选择器 ──
+_PERIOD_SELECTOR_HTML = """
+<style>
+.jiaoan-pb {
+  width:38px;height:38px;border:1.5px solid #d9d9d9;border-radius:6px;
+  display:flex;align-items:center;justify-content:center;cursor:pointer;
+  font-size:15px;font-weight:600;color:#595959;user-select:none;
+  transition:background 0.15s,color 0.15s,border-color 0.15s;
+}
+.jiaoan-pb:hover { border-color:#1677ff;color:#1677ff; }
+.jiaoan-pb.jiaoan-sel { background:#1677ff;color:#fff;border-color:#1677ff; }
+</style>
+<div style="display:flex;gap:6px;" id="jiaoan-period-blocks">
+  <div class="jiaoan-pb" data-p="1" data-s="8:00"  data-e="8:45">1</div>
+  <div class="jiaoan-pb" data-p="2" data-s="8:50"  data-e="9:35">2</div>
+  <div class="jiaoan-pb" data-p="3" data-s="9:55"  data-e="10:40">3</div>
+  <div class="jiaoan-pb" data-p="4" data-s="10:45" data-e="11:30">4</div>
+  <div class="jiaoan-pb" data-p="5" data-s="13:30" data-e="14:15">5</div>
+  <div class="jiaoan-pb" data-p="6" data-s="14:20" data-e="15:05">6</div>
+  <div class="jiaoan-pb" data-p="7" data-s="15:25" data-e="16:10">7</div>
+  <div class="jiaoan-pb" data-p="8" data-s="16:15" data-e="17:00">8</div>
+</div>
+"""
+
+_PERIOD_SELECTOR_JS = """
+() => {
+  if (window._jiaoanPeriodInit) return [];
+  window._jiaoanPeriodInit = true;
+
+  var _sel = new Set();
+
+  function _writeResult() {
+    var sorted = Array.from(_sel).sort(function(a, b) { return a - b; });
+    var result = '';
+    if (sorted.length > 0) {
+      var fb = document.querySelector('#jiaoan-period-blocks .jiaoan-pb[data-p="' + sorted[0] + '"]');
+      var lb = document.querySelector('#jiaoan-period-blocks .jiaoan-pb[data-p="' + sorted[sorted.length - 1] + '"]');
+      if (!fb || !lb) return;
+      var pStr = sorted.length === 1
+        ? '第' + sorted[0] + '节'
+        : '第' + sorted[0] + '-' + sorted[sorted.length - 1] + '节';
+      var tStr = fb.dataset.s + '-' + lb.dataset.e;
+      var dayEl = document.querySelector('#jiaoan-date-input textarea');
+      var day = (dayEl && dayEl.value.trim()) ? dayEl.value.trim() + ' ' : '';
+      result = day + pStr + '（' + tStr + '）';
+    }
+    /* 写入隐藏 Gradio textbox 供 Python 读取 */
+    var target = document.querySelector('#jiaoan-date-result textarea');
+    if (target) {
+      var setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set;
+      setter.call(target, result);
+      target.dispatchEvent(new Event('input', { bubbles: true }));
+    }
+  }
+
+  document.addEventListener('click', function(e) {
+    var b = e.target.closest ? e.target.closest('.jiaoan-pb') : null;
+    if (!b) return;
+    var p = parseInt(b.dataset.p);
+    if (_sel.has(p)) _sel.delete(p); else _sel.add(p);
+    document.querySelectorAll('.jiaoan-pb').forEach(function(x) {
+      x.classList.toggle('jiaoan-sel', _sel.has(parseInt(x.dataset.p)));
+    });
+    _writeResult();
+  });
+
+  function _bindDateInput() {
+    var el = document.querySelector('#jiaoan-date-input textarea');
+    if (el && !el._jbDate) { el._jbDate = true; el.addEventListener('input', _writeResult); }
+  }
+  var _obs = new MutationObserver(_bindDateInput);
+  _obs.observe(document.body, { childList: true, subtree: true });
+  _bindDateInput();
+
+  return [];
+}
+"""
 
 # ── 界面布局 ──
 with gr.Blocks(title="智能教案生成器") as demo:
 
     gr.Markdown("""
     # 📚 智能教案生成器
-    **哈尔滨医科大学** · 基于 Claude AI · 自动生成符合规范的教案 Word 文件
+    **哈尔滨医科大学** · 基于 AI 大模型 · 自动生成符合规范的教案 Word 文件
     ---
     """)
 
     with gr.Row():
         with gr.Column(scale=1):
-            gr.Markdown("### 🔑 API 配置")
-            provider = gr.Radio(
-                choices=["Anthropic (Claude)", "DeepSeek"],
-                value=_cfg.get("provider", "Anthropic (Claude)"),
-                label="AI 提供商",
-            )
-            api_key = gr.Textbox(
-                label="API Key",
-                placeholder="sk-ant-api03-...",
-                value=_cfg.get("api_key", ""),
-                type="password",
-            )
-
-            def update_placeholder(choice):
-                if choice == "DeepSeek":
-                    return gr.Textbox(placeholder="sk-...")
-                return gr.Textbox(placeholder="sk-ant-api03-...")
-
-            provider.change(fn=update_placeholder, inputs=provider, outputs=api_key)
-
             gr.Markdown("### 👩‍🏫 教师信息（每位老师只需填一次）")
-            teacher_name = gr.Textbox(label="任课教师姓名", placeholder="例：大油条",
-                                      value=_cfg.get("teacher_name", ""))
-            professional_title = gr.Textbox(label="教学职称", placeholder="例：助教",
-                                            value=_cfg.get("professional_title", ""))
-            department = gr.Textbox(label="教研室", placeholder="例：药物化学教研室",
-                                    value=_cfg.get("department", ""))
-            college = gr.Textbox(label="学院", placeholder="例：药学院",
-                                 value=_cfg.get("college", ""))
-            course_name = gr.Textbox(label="课程名称", placeholder="例：药物化学",
-                                     value=_cfg.get("course_name", ""))
+            teacher_name = gr.Textbox(label="任课教师姓名", placeholder="例：大油条")
+            professional_title = gr.Textbox(label="教学职称", placeholder="例：助教")
+            department = gr.Textbox(label="教研室", placeholder="例：药物化学教研室")
+            college = gr.Textbox(label="学院", placeholder="例：药学院")
+            course_name = gr.Textbox(label="课程名称", placeholder="例：药物化学")
 
             gr.Markdown("### 📖 教材信息")
-            textbook_name = gr.Textbox(label="教材名称", placeholder="例：药物化学",
-                                       value=_cfg.get("textbook_name", ""))
-            textbook_edition = gr.Textbox(label="版次", placeholder="例：第九版",
-                                          value=_cfg.get("textbook_edition", ""))
-            textbook_editor = gr.Textbox(label="主编", placeholder="例：徐云根",
-                                         value=_cfg.get("textbook_editor", ""))
-            textbook_publisher = gr.Textbox(label="出版社", placeholder="例：人民卫生出版社",
-                                            value=_cfg.get("textbook_publisher", ""))
-            textbook_year = gr.Textbox(label="出版时间", placeholder="例：2023年07月",
-                                       value=_cfg.get("textbook_year", ""))
-            textbook_series = gr.Textbox(label="教材系列", placeholder='例："十四五"规划',
-                                         value=_cfg.get("textbook_series", ""))
+            textbook_name = gr.Textbox(label="教材名称", placeholder="例：药物化学")
+            textbook_edition = gr.Textbox(label="版次", placeholder="例：第九版")
+            textbook_editor = gr.Textbox(label="主编", placeholder="例：徐云根")
+            textbook_publisher = gr.Textbox(label="出版社", placeholder="例：人民卫生出版社")
+            textbook_year = gr.Textbox(label="出版时间", placeholder="例：2023年07月")
+            textbook_series = gr.Textbox(label="教材系列", placeholder='例："十四五"规划')
 
-        with gr.Column(scale=1):
             gr.Markdown("### 📅 本次授课信息")
             title = gr.Textbox(
                 label="授课章节/主题 *",
                 placeholder="例：第四章 第一节 镇静催眠药",
             )
-            students = gr.Textbox(label="教学对象", placeholder="例：2024级药物分析本科1-2班",
-                                  value=_cfg.get("students", ""))
-            classroom = gr.Textbox(label="教学地点", placeholder="例：B402中教室",
-                                   value=_cfg.get("classroom", ""))
+            students = gr.Textbox(label="教学对象", placeholder="例：2024级药物分析本科1-2班")
+            classroom = gr.Textbox(label="教学地点", placeholder="例：B402中教室")
+            teaching_date_day = gr.Textbox(
+                label="授课日期",
+                placeholder="例：2026年3月22日",
+                elem_id="jiaoan-date-input",
+            )
+            gr.HTML(_PERIOD_SELECTOR_HTML, label="授课节次（可多选）")
             teaching_date = gr.Textbox(
                 label="授课时间",
-                placeholder="例：2025年11月4日 8:00-9:35",
+                elem_id="jiaoan-date-result",
+                interactive=False,
+                placeholder="选择日期和节次后自动生成",
             )
 
+        with gr.Column(scale=1):
             gr.Markdown("### 📎 PPT 上传（推荐）")
             ppt_file = gr.File(
                 label="上传本次授课PPT（.pptx 或 .pdf）",
@@ -444,35 +558,51 @@ with gr.Blocks(title="智能教案生成器") as demo:
             )
 
             generate_btn = gr.Button("🚀 一键生成教案", variant="primary", size="lg")
-            status_html = gr.HTML(value="")
             lights_display = gr.HTML(value="")
-            output_file = gr.File(label="📥 下载生成的教案")
+            quote_html = gr.HTML(value="")
+            status_html = gr.HTML(value="")
+            output_file = gr.File(label="📥 下载生成的教案", visible=False)
+            error_html = gr.HTML(value="", visible=False)
+
+    teacher_name.change(
+        fn=_load_user_config,
+        inputs=[teacher_name],
+        outputs=[
+            professional_title, department, college, course_name,
+            textbook_name, textbook_edition, textbook_editor,
+            textbook_publisher, textbook_year, textbook_series,
+            students, classroom,
+        ],
+    )
 
     generate_btn.click(
         fn=generate_streaming,
         inputs=[
-            provider, api_key, course_name, teacher_name, professional_title,
+            course_name, teacher_name, professional_title,
             department, college, students, classroom, teaching_date,
             title, textbook_name, textbook_edition, textbook_editor,
             textbook_publisher, textbook_year, textbook_series,
             extra_notes, user_references, ppt_file,
         ],
-        outputs=[output_file, status_html, lights_display],
+        outputs=[output_file, status_html, lights_display, error_html, quote_html],
     )
+
+    demo.load(fn=None, js=_PERIOD_SELECTOR_JS)
 
     gr.Markdown("""
     ---
-    > 💡 **提示**：教师信息、教材信息会在每次生成后自动保存，下次启动无需重填。每次只需填写授课章节和上传PPT即可。
+    > 💡 **提示**：每位教师的信息会在生成后自动保存。下次使用时，填写姓名后会自动恢复上次的信息。
     > 生成的教案文件保存在 `outputs/` 文件夹中，可直接用 Word 打开修改。
     """)
 
 
 if __name__ == "__main__":
     log_system_info()
+    demo.queue(max_size=20, default_concurrency_limit=10)
     demo.launch(
         server_name="0.0.0.0",
         server_port=7861,
-        inbrowser=True,
+        inbrowser=False,
         share=False,
         theme=gr.themes.Soft(),
         allowed_paths=[OUTPUT_DIR],

@@ -79,6 +79,23 @@ def _extract_slides_text(ppt_data: dict, slide_indices: list) -> str:
 
 
 # ─────────────────────────────────────────────
+# 毛泽东语录：独立小调用，与 Stage 1 并行
+# ─────────────────────────────────────────────
+
+def generate_mao_quotes(provider: str, api_key: str) -> list:
+    """独立生成毛泽东语录列表，每条含 quote 和 source，与 Stage 1 并行运行"""
+    prompt = """请生成30条毛泽东原话，每条注明真实出处（著作/文章名 + 年份），不得编造。内容不限主题。要求足够随机多样，避免选取"为人民服务""虚心使人进步"等高频引用，尽量从不同时期、不同著作中广泛取材。
+
+请严格按以下JSON数组格式返回，不要输出任何JSON以外的内容：
+[
+  {"quote": "...", "source": "《...》（年份）"},
+  {"quote": "...", "source": "..."}
+]"""
+    raw = _call_api(provider, api_key, prompt, max_tokens=3000)
+    return _extract_json_array(raw)
+
+
+# ─────────────────────────────────────────────
 # Stage 1：生成整体框架与教学大纲
 # ─────────────────────────────────────────────
 
@@ -201,7 +218,7 @@ def _generate_structure(
 4. related_slides 必须与PPT实际页码对应，若不确定可留空数组
 5. ideological_point 只记录思政切入方向，具体内容在 Stage 2 展开
 """
-    raw = _call_api(provider, api_key, prompt, max_tokens=4096)
+    raw = _call_api(provider, api_key, prompt, max_tokens=8192)
     return _extract_json(raw)
 
 
@@ -927,8 +944,8 @@ def generate_lesson_plan(
             "ideological_point": ""
         }]
 
-    # 通知前端更新灯泡总数（固定步骤6个 + 每节1个）
-    _cb("_total", 6 + len(sections))
+    # 通知前端更新灯泡总数（固定步骤6个 + 每节1个，语录在外部已计1格）
+    _cb("_total", 7 + len(sections))
 
     key_points = result.get("key_points", "")
     difficult_points = result.get("difficult_points", "")
