@@ -1,12 +1,12 @@
 @echo off
 cd /d %~dp0
-echo 锟斤拷锟节达拷 GitHub 锟斤拷取锟斤拷锟铰达拷锟斤拷...
+echo 正在从 GitHub 获取最新代码...
 git pull
 if %errorlevel% == 0 (
     echo.
-    echo 锟斤拷锟铰成癸拷锟斤拷
+    echo 更新成功！
 ) else (
     echo.
-    echo 锟斤拷锟斤拷失锟杰ｏ拷锟斤拷锟斤拷锟斤拷锟斤拷锟斤拷锟斤拷锟角凤拷锟斤拷锟斤拷
+    echo 更新失败，请检查网络连接是否正常
 )
 pause
